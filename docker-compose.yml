@@ -1,0 +1,102 @@
+version: "3.8"
+
+# ============================================================
+# STB Automation Framework — Docker Compose
+# Runs: n8n + Webhook Server + Streamlit Dashboard
+#
+# Usage:
+#   docker-compose up -d          # start all services
+#   docker-compose logs -f n8n    # follow n8n logs
+#   docker-compose down           # stop all
+# ============================================================
+
+services:
+
+  # ── n8n Workflow Automation ──────────────────────────────
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: stb_n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      # Basic auth for n8n UI (change these!)
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-stb-admin-2024}
+      # Timezone
+      - GENERIC_TIMEZONE=${TZ:-Asia/Kolkata}
+      - TZ=${TZ:-Asia/Kolkata}
+      # Webhook base URL (update to your server IP in production)
+      - WEBHOOK_URL=http://localhost:5678/
+      # Secrets passed through to workflows
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-stb-n8n-secret-changeme}
+      - CMS_BASE_URL=${CMS_BASE_URL:-https://cms.stb-platform.internal/api/v1}
+      - CMS_API_KEY=${CMS_API_KEY:-}
+      # Workflow data persistence
+      - N8N_USER_FOLDER=/home/node/.n8n
+    volumes:
+      - n8n_data:/home/node/.n8n
+      # Auto-import workflows on first start
+      - ./n8n/workflows:/home/node/.n8n/workflows:ro
+    networks:
+      - stb_net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Webhook Server (bridges n8n ↔ pytest) ────────────────
+  webhook:
+    build:
+      context: .
+      dockerfile: n8n/webhooks/Dockerfile
+    container_name: stb_webhook
+    restart: unless-stopped
+    ports:
+      - "5050:5050"
+    environment:
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-stb-n8n-secret-changeme}
+      - WEBHOOK_PORT=5050
+      - CMS_API_KEY=${CMS_API_KEY:-}
+      - CMS_BASE_URL=${CMS_BASE_URL:-}
+      - STB_DEVICE_IP=${STB_DEVICE_IP:-192.168.1.100}
+    volumes:
+      # Mount project so webhook server can invoke pytest + read results
+      - .:/app
+    working_dir: /app
+    networks:
+      - stb_net
+    depends_on:
+      - n8n
+
+  # ── Streamlit Dashboard ───────────────────────────────────
+  dashboard:
+    build:
+      context: .
+      dockerfile: n8n/webhooks/Dockerfile
+    container_name: stb_dashboard
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    command: >
+      streamlit run dashboard/dashboard.py
+        --server.port=8501
+        --server.address=0.0.0.0
+        --server.headless=true
+        --browser.gatherUsageStats=false
+    volumes:
+      - .:/app
+    working_dir: /app
+    networks:
+      - stb_net
+
+# ── Volumes & Networks ────────────────────────────────────
+volumes:
+  n8n_data:
+    driver: local
+
+networks:
+  stb_net:
+    driver: bridge

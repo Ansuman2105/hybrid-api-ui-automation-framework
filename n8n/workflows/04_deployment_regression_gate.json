@@ -1,0 +1,170 @@
+{
+  "name": "STB — Deployment Webhook → Regression Gate",
+  "description": "Called by CI/CD (GitHub Actions, Jenkins, etc.) after a CMS deployment. Runs the full regression suite and blocks the pipeline if tests fail by returning a non-200 status.",
+  "nodes": [
+    {
+      "id": "deploy-webhook",
+      "name": "Deployment Event Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [100, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "deployment-gate",
+        "responseMode": "lastNode",
+        "responseData": "allEntries"
+      }
+    },
+    {
+      "id": "parse-deploy-event",
+      "name": "Parse Deploy Event",
+      "type": "n8n-nodes-base.code",
+      "position": [320, 300],
+      "parameters": {
+        "jsCode": "const body = $input.item.json.body || $input.item.json;\nreturn [{\n  json: {\n    environment:  body.environment || 'staging',\n    version:      body.version || body.tag || 'unknown',\n    deployed_by:  body.actor || body.deployed_by || 'CI',\n    repo:         body.repository || 'stb-cms',\n    commit:       body.commit_sha || body.sha || '',\n    deploy_time:  new Date().toISOString(),\n    run_markers:  body.test_markers || 'regression',\n    workers:      body.parallel_workers || 2,\n  }\n}];"
+      }
+    },
+    {
+      "id": "clear-results-pre",
+      "name": "Clear Results (Pre-run)",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [540, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5050/webhook/clear-results",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Webhook-Secret", "value": "={{ $env.WEBHOOK_SECRET }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "slack-run-started",
+      "name": "Slack: Regression Started",
+      "type": "n8n-nodes-base.slack",
+      "position": [760, 180],
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "message",
+        "operation": "post",
+        "channel": "#deployments",
+        "text": "🔄 *STB Regression Suite Started*\n\n• Env: `{{ $('Parse Deploy Event').item.json.environment }}`\n• Version: `{{ $('Parse Deploy Event').item.json.version }}`\n• Deployed by: {{ $('Parse Deploy Event').item.json.deployed_by }}\n• Commit: `{{ $('Parse Deploy Event').item.json.commit }}`\n\nRunning `{{ $('Parse Deploy Event').item.json.run_markers }}` tests with {{ $('Parse Deploy Event').item.json.workers }} workers..."
+      }
+    },
+    {
+      "id": "run-regression",
+      "name": "Run Regression Suite",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [760, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5050/webhook/run-tests",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Webhook-Secret", "value": "={{ $env.WEBHOOK_SECRET }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "markers", "value": "={{ $('Parse Deploy Event').item.json.run_markers }}" },
+            { "name": "workers", "value": "={{ $('Parse Deploy Event').item.json.workers }}" },
+            { "name": "reruns",  "value": "2" }
+          ]
+        },
+        "timeout": 1200000
+      }
+    },
+    {
+      "id": "evaluate-gate",
+      "name": "Evaluate Quality Gate",
+      "type": "n8n-nodes-base.code",
+      "position": [980, 300],
+      "parameters": {
+        "jsCode": "const data  = $input.item.json;\nconst s     = data.summary || {};\nconst deploy = $('Parse Deploy Event').item.json;\n\n// Gate: pass if pass_pct >= 90 AND no errors\nconst PASS_THRESHOLD = 90;\nconst gate_passed = s.pass_pct >= PASS_THRESHOLD && s.errors === 0;\n\nreturn [{\n  json: {\n    gate_passed,\n    gate_threshold: PASS_THRESHOLD,\n    summary: s,\n    run_id: data.run_id,\n    exit_code: data.exit_code,\n    deploy,\n    verdict: gate_passed ? 'APPROVED' : 'BLOCKED',\n    reason: !gate_passed\n      ? `Pass rate ${s.pass_pct}% below ${PASS_THRESHOLD}% threshold or ${s.errors} error(s) detected`\n      : `All quality gates passed (${s.pass_pct}% pass rate)`,\n  }\n}];"
+      }
+    },
+    {
+      "id": "gate-check",
+      "name": "Gate Passed?",
+      "type": "n8n-nodes-base.if",
+      "position": [1200, 300],
+      "parameters": {
+        "conditions": {
+          "boolean": [{ "value1": "={{ $json.gate_passed }}", "value2": true }]
+        }
+      }
+    },
+    {
+      "id": "respond-approved",
+      "name": "Respond: APPROVED (200)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [1420, 180],
+      "parameters": {
+        "respondWith": "json",
+        "responseCode": 200,
+        "responseBody": "={{ JSON.stringify({ status: 'APPROVED', verdict: $json.verdict, summary: $json.summary, run_id: $json.run_id, reason: $json.reason }) }}"
+      }
+    },
+    {
+      "id": "slack-approved",
+      "name": "Slack: Deploy Approved ✅",
+      "type": "n8n-nodes-base.slack",
+      "position": [1640, 180],
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "message",
+        "operation": "post",
+        "channel": "#deployments",
+        "text": "✅ *STB Regression Gate — APPROVED*\n\n• Version: `{{ $json.deploy.version }}`\n• Pass Rate: *{{ $json.summary.pass_pct }}%* (threshold: {{ $json.gate_threshold }}%)\n• Total: {{ $json.summary.total }} | ✅ {{ $json.summary.passed }} | ❌ {{ $json.summary.failed }}\n• Run ID: `{{ $json.run_id }}`\n\nDeployment to `{{ $json.deploy.environment }}` is approved. 🚀"
+      }
+    },
+    {
+      "id": "respond-blocked",
+      "name": "Respond: BLOCKED (422)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [1420, 420],
+      "parameters": {
+        "respondWith": "json",
+        "responseCode": 422,
+        "responseBody": "={{ JSON.stringify({ status: 'BLOCKED', verdict: $json.verdict, summary: $json.summary, run_id: $json.run_id, reason: $json.reason }) }}"
+      }
+    },
+    {
+      "id": "slack-blocked",
+      "name": "Slack: Deploy BLOCKED ❌",
+      "type": "n8n-nodes-base.slack",
+      "position": [1640, 420],
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "message",
+        "operation": "post",
+        "channel": "#deployments",
+        "text": "🚫 *STB Regression Gate — DEPLOYMENT BLOCKED*\n\n• Version: `{{ $json.deploy.version }}`\n• Reason: {{ $json.reason }}\n• Pass Rate: {{ $json.summary.pass_pct }}% (need {{ $json.gate_threshold }}%+)\n• Failed: {{ $json.summary.failed }} | Errors: {{ $json.summary.errors }}\n• Run ID: `{{ $json.run_id }}`\n\n📊 Full report: http://localhost:8501\n🔗 Fix failures before re-deploying."
+      }
+    }
+  ],
+  "connections": {
+    "Deployment Event Webhook": { "main": [[{ "node": "Parse Deploy Event", "type": "main", "index": 0 }]] },
+    "Parse Deploy Event": {
+      "main": [[
+        { "node": "Clear Results (Pre-run)", "type": "main", "index": 0 },
+        { "node": "Slack: Regression Started", "type": "main", "index": 0 }
+      ]]
+    },
+    "Clear Results (Pre-run)": { "main": [[{ "node": "Run Regression Suite", "type": "main", "index": 0 }]] },
+    "Run Regression Suite": { "main": [[{ "node": "Evaluate Quality Gate", "type": "main", "index": 0 }]] },
+    "Evaluate Quality Gate": { "main": [[{ "node": "Gate Passed?", "type": "main", "index": 0 }]] },
+    "Gate Passed?": {
+      "main": [
+        [{ "node": "Respond: APPROVED (200)", "type": "main", "index": 0 }],
+        [{ "node": "Respond: BLOCKED (422)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Respond: APPROVED (200)": { "main": [[{ "node": "Slack: Deploy Approved ✅", "type": "main", "index": 0 }]] },
+    "Respond: BLOCKED (422)": { "main": [[{ "node": "Slack: Deploy BLOCKED ❌", "type": "main", "index": 0 }]] }
+  }
+}

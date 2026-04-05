@@ -1,0 +1,55 @@
+{
+  "appium": {
+    "server_url": "http://127.0.0.1:4723",
+    "command_timeout": 300
+  },
+  "device": {
+    "platform_name": "Android",
+    "automation_name": "UiAutomator2",
+    "device_name": "STB_DEVICE_001",
+    "device_ip": "192.168.31.248",
+    "device_port": 5555,
+    "app_package": "com.jio.stb.hotellauncher",
+    "app_activity": "com.jio.stb.hotellauncher.MainActivity",
+    "no_reset": true,
+    "full_reset": false,
+    "new_command_timeout": 120,
+    "uiautomator2_server_install_timeout": 90000,
+    "uiautomator2_server_launch_timeout": 60000,
+    "adb_exec_timeout": 60000,
+    "android_device_ready_timeout": 60000,
+    "implicit_wait": 10,
+    "explicit_wait": 20
+  },
+  "api": {
+    "base_url": "https://devices.cms.jio.com",
+    "timeout": 30,
+    "retry_attempts": 3,
+    "retry_delay": 2,
+    "headers": {
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    }
+  },
+  "auth": {
+    "api_key_env": "CMS_API_KEY",
+    "username_env": "CMS_USERNAME",
+    "password_env": "CMS_PASSWORD"
+  },
+  "reporting": {
+    "results_file": "reports/results.json",
+    "screenshots_dir": "reports/screenshots",
+    "log_level": "DEBUG",
+    "log_file": "logs/automation.log"
+  },
+  "dashboard": {
+    "port": 8501,
+    "refresh_interval": 5,
+    "theme": "dark"
+  },
+  "execution": {
+    "parallel_workers": 2,
+    "retry_on_failure": 2,
+    "screenshot_on_failure": true
+  }
+}

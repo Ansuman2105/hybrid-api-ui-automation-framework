@@ -1,0 +1,42 @@
+# Secrets — NEVER commit
+config/.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# Pytest
+.pytest_cache/
+.cache/
+*.log
+
+# Reports (generated at runtime)
+reports/screenshots/
+logs/
+
+# Keep results.json skeleton but ignore large runs
+# reports/results.json   # comment out to track in VCS
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Allure
+allure-results/
+allure-report/

@@ -1,0 +1,14 @@
+[
+  {
+    "test_name": "tests/test_guest_e2e.py::test_guest_api_to_ui",
+    "status": "PASS",
+    "duration_sec": 55.719,
+    "timestamp": "2026-04-03T11:19:20.252066+00:00",
+    "device": "STB_DEVICE_001",
+    "screenshot": null,
+    "error_msg": null,
+    "tags": [
+      "e2e"
+    ]
+  }
+]

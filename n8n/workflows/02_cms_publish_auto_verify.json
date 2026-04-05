@@ -1,0 +1,221 @@
+{
+  "name": "STB — CMS Tile Published → Auto-Verify on Launcher",
+  "description": "When a CMS editor publishes a new tile, this workflow waits for CDN propagation then automatically triggers a targeted UI test to verify it appears on the STB launcher. Result is posted back to the CMS and to Slack.",
+  "nodes": [
+    {
+      "id": "cms-webhook-trigger",
+      "name": "CMS Tile Published (Webhook)",
+      "type": "n8n-nodes-base.webhook",
+      "position": [100, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cms-tile-published",
+        "responseMode": "lastNode",
+        "responseData": "allEntries"
+      }
+    },
+    {
+      "id": "extract-tile-info",
+      "name": "Extract Tile Info",
+      "type": "n8n-nodes-base.code",
+      "position": [320, 300],
+      "parameters": {
+        "jsCode": "const body = $input.item.json.body || $input.item.json;\nreturn [{\n  json: {\n    tile_id:    body.tile_id || body.id,\n    tile_title: body.title || body.tile_title,\n    category:   body.category || 'featured',\n    event_type: body.event || 'published',\n    triggered_by: body.user || body.triggered_by || 'CMS',\n    triggered_at: new Date().toISOString(),\n  }\n}];"
+      }
+    },
+    {
+      "id": "wait-propagation",
+      "name": "Wait for CDN Propagation (30s)",
+      "type": "n8n-nodes-base.wait",
+      "position": [540, 300],
+      "parameters": {
+        "amount": 30,
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "check-device-ready",
+      "name": "Check STB Device Ready",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [760, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "http://localhost:5050/webhook/device-status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Webhook-Secret", "value": "={{ $env.WEBHOOK_SECRET }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "is-device-ready",
+      "name": "STB Online?",
+      "type": "n8n-nodes-base.if",
+      "position": [980, 300],
+      "parameters": {
+        "conditions": {
+          "boolean": [{ "value1": "={{ $json.ready }}", "value2": true }]
+        }
+      }
+    },
+    {
+      "id": "run-targeted-test",
+      "name": "Run Targeted Tile Verify Test",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1200, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5050/webhook/run-tests",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Webhook-Secret", "value": "={{ $env.WEBHOOK_SECRET }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "markers", "value": "hybrid and smoke" },
+            { "name": "reruns", "value": "1" }
+          ]
+        },
+        "timeout": 300000
+      }
+    },
+    {
+      "id": "flag-no-device",
+      "name": "Set No-Device Status",
+      "type": "n8n-nodes-base.set",
+      "position": [1200, 420],
+      "parameters": {
+        "values": {
+          "string": [
+            { "name": "verification_status", "value": "skipped_no_device" },
+            { "name": "message", "value": "STB device offline at time of verification" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "evaluate-result",
+      "name": "Evaluate Test Result",
+      "type": "n8n-nodes-base.code",
+      "position": [1420, 200],
+      "parameters": {
+        "jsCode": "const data = $input.item.json;\nconst summary = data.summary || {};\nconst results = data.results || [];\n\n// Find the specific tile test\nconst tileTest = results.find(r => r.test_name && r.test_name.includes('test_tile_from_cms'));\n\nreturn [{\n  json: {\n    passed: summary.failed === 0 && summary.errors === 0,\n    summary,\n    tile_test_status: tileTest ? tileTest.status : 'NOT_RUN',\n    tile_test_duration: tileTest ? tileTest.duration_sec : null,\n    screenshot: tileTest ? tileTest.screenshot : null,\n    run_id: data.run_id,\n  }\n}];"
+      }
+    },
+    {
+      "id": "test-passed",
+      "name": "Test Passed?",
+      "type": "n8n-nodes-base.if",
+      "position": [1640, 200],
+      "parameters": {
+        "conditions": {
+          "boolean": [{ "value1": "={{ $json.passed }}", "value2": true }]
+        }
+      }
+    },
+    {
+      "id": "update-cms-pass",
+      "name": "Update CMS — Verified ✅",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1860, 100],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.CMS_BASE_URL }}/tiles/{{ $('Extract Tile Info').item.json.tile_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{ $env.CMS_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "stbVerified", "value": "true" },
+            { "name": "stbVerifiedAt", "value": "={{ $now.toISO() }}" },
+            { "name": "stbVerificationStatus", "value": "PASS" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "slack-verified",
+      "name": "Slack: Tile Verified ✅",
+      "type": "n8n-nodes-base.slack",
+      "position": [2080, 100],
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "message",
+        "operation": "post",
+        "channel": "#content-publishing",
+        "text": "✅ *Tile Verified on STB Launcher*\n\n• Title: `{{ $('Extract Tile Info').item.json.tile_title }}`\n• Category: `{{ $('Extract Tile Info').item.json.category }}`\n• Published by: {{ $('Extract Tile Info').item.json.triggered_by }}\n• Verification: PASSED in {{ $('Evaluate Test Result').item.json.tile_test_duration }}s\n• Run ID: `{{ $('Evaluate Test Result').item.json.run_id }}`\n\nTile is live and visible on the launcher. 🎉"
+      }
+    },
+    {
+      "id": "update-cms-fail",
+      "name": "Update CMS — Failed ❌",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1860, 340],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.CMS_BASE_URL }}/tiles/{{ $('Extract Tile Info').item.json.tile_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{ $env.CMS_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "stbVerified", "value": "false" },
+            { "name": "stbVerificationStatus", "value": "FAIL" },
+            { "name": "stbVerifiedAt", "value": "={{ $now.toISO() }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "slack-not-visible",
+      "name": "Slack: Tile NOT Visible ❌",
+      "type": "n8n-nodes-base.slack",
+      "position": [2080, 340],
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "message",
+        "operation": "post",
+        "channel": "#stb-alerts",
+        "text": "❌ *Tile NOT Visible on STB Launcher — Action Required*\n\n• Title: `{{ $('Extract Tile Info').item.json.tile_title }}`\n• Published by: {{ $('Extract Tile Info').item.json.triggered_by }}\n• Status: {{ $('Evaluate Test Result').item.json.tile_test_status }}\n• Run ID: `{{ $('Evaluate Test Result').item.json.run_id }}`\n\n*Possible causes:*\n• CDN propagation delay (try re-publishing)\n• Tile config error (check category/isActive)\n• STB cache not cleared\n\n📊 Dashboard: http://localhost:8501"
+      }
+    }
+  ],
+  "connections": {
+    "CMS Tile Published (Webhook)": { "main": [[{ "node": "Extract Tile Info", "type": "main", "index": 0 }]] },
+    "Extract Tile Info": { "main": [[{ "node": "Wait for CDN Propagation (30s)", "type": "main", "index": 0 }]] },
+    "Wait for CDN Propagation (30s)": { "main": [[{ "node": "Check STB Device Ready", "type": "main", "index": 0 }]] },
+    "Check STB Device Ready": { "main": [[{ "node": "STB Online?", "type": "main", "index": 0 }]] },
+    "STB Online?": {
+      "main": [
+        [{ "node": "Run Targeted Tile Verify Test", "type": "main", "index": 0 }],
+        [{ "node": "Set No-Device Status", "type": "main", "index": 0 }]
+      ]
+    },
+    "Run Targeted Tile Verify Test": { "main": [[{ "node": "Evaluate Test Result", "type": "main", "index": 0 }]] },
+    "Evaluate Test Result": { "main": [[{ "node": "Test Passed?", "type": "main", "index": 0 }]] },
+    "Test Passed?": {
+      "main": [
+        [{ "node": "Update CMS — Verified ✅", "type": "main", "index": 0 }],
+        [{ "node": "Update CMS — Failed ❌", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update CMS — Verified ✅": { "main": [[{ "node": "Slack: Tile Verified ✅", "type": "main", "index": 0 }]] },
+    "Update CMS — Failed ❌": { "main": [[{ "node": "Slack: Tile NOT Visible ❌", "type": "main", "index": 0 }]] }
+  }
+}

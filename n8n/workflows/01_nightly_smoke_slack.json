@@ -1,0 +1,173 @@
+{
+  "name": "STB — Nightly Smoke Tests + Slack Report",
+  "description": "Runs smoke tests every night at 2am, posts pass/fail summary to Slack. On failure, sends detailed failure report.",
+  "nodes": [
+    {
+      "id": "trigger-cron",
+      "name": "Nightly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [100, 300],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 2 * * *" }]
+        }
+      }
+    },
+    {
+      "id": "clear-results",
+      "name": "Clear Old Results",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [320, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5050/webhook/clear-results",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Webhook-Secret", "value": "={{ $env.WEBHOOK_SECRET }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "check-device",
+      "name": "Check Device Online",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [540, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "http://localhost:5050/webhook/device-status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Webhook-Secret", "value": "={{ $env.WEBHOOK_SECRET }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "device-ready-check",
+      "name": "Device Ready?",
+      "type": "n8n-nodes-base.if",
+      "position": [760, 300],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.ready }}",
+              "value2": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "slack-device-offline",
+      "name": "Slack: Device Offline Alert",
+      "type": "n8n-nodes-base.slack",
+      "position": [980, 460],
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "message",
+        "operation": "post",
+        "channel": "#stb-alerts",
+        "text": "🔴 *STB Nightly Run SKIPPED* — Device offline at scheduled run time.\n\n• Time: {{ $now.toISO() }}\n• Action required: Check STB power & ADB connection"
+      }
+    },
+    {
+      "id": "run-smoke-tests",
+      "name": "Run Smoke Tests",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [980, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5050/webhook/run-tests",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Webhook-Secret", "value": "={{ $env.WEBHOOK_SECRET }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "markers", "value": "smoke" },
+            { "name": "reruns", "value": "2" }
+          ]
+        },
+        "timeout": 600000
+      }
+    },
+    {
+      "id": "check-pass-fail",
+      "name": "Any Failures?",
+      "type": "n8n-nodes-base.if",
+      "position": [1200, 300],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.summary.has_failures }}",
+              "value2": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "slack-all-pass",
+      "name": "Slack: All Passed ✅",
+      "type": "n8n-nodes-base.slack",
+      "position": [1420, 200],
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "message",
+        "operation": "post",
+        "channel": "#stb-automation",
+        "text": "✅ *STB Nightly Smoke Tests — ALL PASSED*\n\n• Total: {{ $json.summary.total }}\n• Passed: {{ $json.summary.passed }}\n• Pass Rate: {{ $json.summary.pass_pct }}%\n• Duration: {{ $now.toISO() }}\n\n📊 Dashboard: http://localhost:8501"
+      }
+    },
+    {
+      "id": "build-failure-report",
+      "name": "Build Failure Report",
+      "type": "n8n-nodes-base.code",
+      "position": [1420, 400],
+      "parameters": {
+        "jsCode": "const results = $input.item.json.results || [];\nconst summary = $input.item.json.summary || {};\n\nconst failures = results.filter(r => r.status === 'FAIL' || r.status === 'ERROR');\n\nconst failureLines = failures.map(f => {\n  const name = f.test_name.split('::').slice(-1)[0];\n  const err = f.error_msg ? f.error_msg.substring(0, 120) + '...' : 'No details';\n  return `  • *${name}* (${f.duration_sec}s)\\n    \\`${err}\\``;\n}).join('\\n');\n\nreturn [{\n  json: {\n    summary,\n    failure_count: failures.length,\n    failure_report: failureLines,\n    run_id: $input.item.json.run_id,\n  }\n}];"
+      }
+    },
+    {
+      "id": "slack-failures",
+      "name": "Slack: Failure Report ❌",
+      "type": "n8n-nodes-base.slack",
+      "position": [1640, 400],
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "message",
+        "operation": "post",
+        "channel": "#stb-alerts",
+        "text": "❌ *STB Nightly Smoke Tests — FAILURES DETECTED*\n\n• Total: {{ $json.summary.total }} | Passed: {{ $json.summary.passed }} | Failed: {{ $json.summary.failed }}\n• Pass Rate: {{ $json.summary.pass_pct }}%\n• Run ID: `{{ $json.run_id }}`\n\n*Failed Tests:*\n{{ $json.failure_report }}\n\n📊 Dashboard: http://localhost:8501\n🔗 Results: http://localhost:5050/webhook/results"
+      }
+    }
+  ],
+  "connections": {
+    "Nightly Schedule": { "main": [[{ "node": "Clear Old Results", "type": "main", "index": 0 }]] },
+    "Clear Old Results": { "main": [[{ "node": "Check Device Online", "type": "main", "index": 0 }]] },
+    "Check Device Online": { "main": [[{ "node": "Device Ready?", "type": "main", "index": 0 }]] },
+    "Device Ready?": {
+      "main": [
+        [{ "node": "Run Smoke Tests", "type": "main", "index": 0 }],
+        [{ "node": "Slack: Device Offline Alert", "type": "main", "index": 0 }]
+      ]
+    },
+    "Run Smoke Tests": { "main": [[{ "node": "Any Failures?", "type": "main", "index": 0 }]] },
+    "Any Failures?": {
+      "main": [
+        [{ "node": "Build Failure Report", "type": "main", "index": 0 }],
+        [{ "node": "Slack: All Passed ✅", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Failure Report": { "main": [[{ "node": "Slack: Failure Report ❌", "type": "main", "index": 0 }]] }
+  }
+}
