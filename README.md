@@ -216,28 +216,6 @@ DEVICE_IP=192.168.31.248
 DEVICE_PORT=5555
 WEBHOOK_SECRET=your_secret
 ```
-
----
-
-## 🚀 Future Enhancements
-
-* 🔥 Multi-device execution dashboard
-* 📊 Historical analytics
-* ☁️ AWS / Docker deployment
-* 🤖 AI-based failure analysis
-
----
-
-## 💼 Resume Highlights
-
-* Designed a **hybrid automation framework (API + UI)**
-* Built **dynamic device management using ADB**
-* Developed **real-time monitoring dashboard using Streamlit**
-* Integrated **n8n for workflow orchestration**
-* Achieved scalable and modular architecture
-
----
-
 ## 🛠️ Tech Stack
 
 * Python
